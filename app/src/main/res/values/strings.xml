@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Lens Isolator</string>
+    <string name="camera_permission_required">Camera permission is required to query and test camera sensors.</string>
+    <string name="grant_permission">Grant Permission</string>
+</resources>
