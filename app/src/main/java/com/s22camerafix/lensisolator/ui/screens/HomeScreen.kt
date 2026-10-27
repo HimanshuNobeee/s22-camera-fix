@@ -56,6 +56,7 @@ import com.s22camerafix.lensisolator.viewmodel.CameraViewModel
 @Composable
 fun HomeScreen(
     viewModel: CameraViewModel,
+    onNavigateToCameraApp: () -> Unit,
     onNavigateToSingleTest: (CameraDeviceDetails, Boolean) -> Unit,
     onNavigateToMultiTest: () -> Unit,
     onNavigateToReport: () -> Unit,
@@ -90,17 +91,32 @@ fun HomeScreen(
                 )
             }
 
-            IconButton(
-                onClick = { viewModel.refreshCameras() },
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(DarkSurfaceVariant)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = "Refresh Sensors",
-                    tint = Color.White
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = onNavigateToCameraApp,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.CameraAlt, contentDescription = null, tint = DarkBackground, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(text = "Camera", color = DarkBackground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                IconButton(
+                    onClick = { viewModel.refreshCameras() },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(DarkSurfaceVariant)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh Sensors",
+                        tint = Color.White
+                    )
+                }
             }
         }
 

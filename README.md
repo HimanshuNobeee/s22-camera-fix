@@ -1,6 +1,27 @@
-# Lens Isolator — Samsung Galaxy S22 Camera Hardware Diagnostic & Lens Isolation Tool
+# Lens Isolator — Samsung Galaxy S22 Daily Camera & Hardware Lens Isolation Tool
 
-A specialized Android diagnostic utility engineered to test, isolate, and debug individual camera sensors on devices with damaged camera modules (specifically tailored for the **Samsung Galaxy S22** and multi-camera Android devices).
+A complete, full-featured daily camera application engineered as a drop-in replacement for the Samsung OneUI Camera app, with built-in hardware lens isolation to bypass damaged sensors (specifically designed for the **Samsung Galaxy S22** with water-damaged telephoto modules).
+
+---
+
+## 📸 Daily Camera Experience (Samsung OneUI Replica)
+
+1. **Initial Hardware Sensor Setup Wizard**:
+   - On initial launch (or from Settings ⚙️), a setup wizard detects all camera sensors.
+   - You choose which lenses are active:
+     - `[✓] Front Camera (10 MP Selfie)`
+     - `[✓] Primary Wide Camera (50 MP - 1x)`
+     - `[✓] Ultra-Wide Camera (12 MP - 0.6x)`
+     - `[ ] 3x Telephoto Camera (10 MP - 3x) -> DISABLED (Water Damaged)`
+   - The app **never probes or connects to the disabled 3x sensor**, preventing the fatal `cameraserver` crash!
+
+2. **OneUI Camera Interface**:
+   - **Full-Screen Viewfinder**: 4:3, 16:9, 1:1, or FULL display aspect ratios.
+   - **Samsung-Style Zoom Pills**: Quick-switch buttons (`.6` Ultra-Wide, `1` Wide), with the broken `3` lens omitted!
+   - **Shutter & Gallery**: Big white Samsung shutter button with haptic feedback, shutter click sound, and instant gallery thumbnail linking to Samsung Gallery.
+   - **Photo Controls**: Tap-to-focus with animated reticle, pinch-to-zoom, flash cycle (Off / Auto / On), and timer (2s / 5s / 10s).
+   - **Gallery Integration**: Automatically saves full-resolution JPEGs to `DCIM/Camera` via MediaStore.
+   - **Built-in Diagnostics Switcher**: Switch to low-level hardware diagnostics with one tap.
 
 ---
 

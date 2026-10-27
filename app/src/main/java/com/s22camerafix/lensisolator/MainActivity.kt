@@ -25,8 +25,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +39,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.s22camerafix.lensisolator.data.CameraPreferences
+import com.s22camerafix.lensisolator.ui.screens.CameraAppScreen
 import com.s22camerafix.lensisolator.ui.screens.DiagnosticReportScreen
 import com.s22camerafix.lensisolator.ui.screens.HomeScreen
 import com.s22camerafix.lensisolator.ui.screens.MultiCameraTestScreen
@@ -49,7 +53,8 @@ import com.s22camerafix.lensisolator.ui.theme.TextSecondary
 import com.s22camerafix.lensisolator.viewmodel.CameraViewModel
 
 sealed class AppScreen {
-    object Home : AppScreen()
+    object CameraApp : AppScreen()
+    object DiagnosticsHome : AppScreen()
     data class SingleTest(val initialLegacyMode: Boolean = false) : AppScreen()
     object MultiTest : AppScreen()
     object Report : AppScreen()
@@ -59,7 +64,8 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: CameraViewModel by viewModels()
     private var hasCameraPermission by mutableStateOf(false)
-    private var currentScreen by mutableStateOf<AppScreen>(AppScreen.Home)
+    private var currentScreen by mutableStateOf<AppScreen>(AppScreen.CameraApp)
+    private lateinit var preferences: CameraPreferences
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -72,7 +78,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        preferences = CameraPreferences(this)
         checkCameraPermission()
 
         setContent {
@@ -88,10 +94,26 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     } else {
+                        val cameras by viewModel.cameras.collectAsState()
+
                         when (val screen = currentScreen) {
-                            is AppScreen.Home -> {
+                            is AppScreen.CameraApp -> {
+                                CameraAppScreen(
+                                    allCameras = cameras,
+                                    preferences = preferences,
+                                    onOpenDiagnostics = {
+                                        viewModel.stopCurrentTest()
+                                        currentScreen = AppScreen.DiagnosticsHome
+                                    }
+                                )
+                            }
+                            is AppScreen.DiagnosticsHome -> {
                                 HomeScreen(
                                     viewModel = viewModel,
+                                    onNavigateToCameraApp = {
+                                        viewModel.stopCurrentTest()
+                                        currentScreen = AppScreen.CameraApp
+                                    },
                                     onNavigateToSingleTest = { _, isLegacy ->
                                         currentScreen = AppScreen.SingleTest(isLegacy)
                                     },
@@ -107,19 +129,19 @@ class MainActivity : ComponentActivity() {
                                 SingleCameraTestScreen(
                                     viewModel = viewModel,
                                     initialLegacyMode = screen.initialLegacyMode,
-                                    onBack = { currentScreen = AppScreen.Home }
+                                    onBack = { currentScreen = AppScreen.DiagnosticsHome }
                                 )
                             }
                             is AppScreen.MultiTest -> {
                                 MultiCameraTestScreen(
                                     viewModel = viewModel,
-                                    onBack = { currentScreen = AppScreen.Home }
+                                    onBack = { currentScreen = AppScreen.DiagnosticsHome }
                                 )
                             }
                             is AppScreen.Report -> {
                                 DiagnosticReportScreen(
                                     viewModel = viewModel,
-                                    onBack = { currentScreen = AppScreen.Home }
+                                    onBack = { currentScreen = AppScreen.DiagnosticsHome }
                                 )
                             }
                         }
@@ -138,11 +160,13 @@ class MainActivity : ComponentActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (currentScreen !is AppScreen.Home) {
-            viewModel.stopCurrentTest()
-            currentScreen = AppScreen.Home
-        } else {
-            super.onBackPressed()
+        when (currentScreen) {
+            is AppScreen.CameraApp -> super.onBackPressed()
+            is AppScreen.DiagnosticsHome -> currentScreen = AppScreen.CameraApp
+            else -> {
+                viewModel.stopCurrentTest()
+                currentScreen = AppScreen.DiagnosticsHome
+            }
         }
     }
 }
@@ -182,7 +206,7 @@ fun PermissionRequiredScreen(onRequestPermission: () -> Unit) {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Lens Isolator requires Camera permission to probe the camera hardware and test isolated lenses. No camera will open automatically.",
+                text = "Lens Isolator requires Camera permission to operate the camera lenses. You will be able to select which lenses are enabled.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
                 textAlign = TextAlign.Center
