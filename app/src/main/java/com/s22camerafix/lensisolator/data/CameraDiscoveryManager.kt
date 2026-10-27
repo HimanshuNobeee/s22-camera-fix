@@ -131,7 +131,7 @@ class CameraDiscoveryManager(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && isLogicalMultiCam) {
             for (physicalId in physicalIds) {
                 try {
-                    val physicalChar = characteristics.getPhysicalCameraCharacteristics(physicalId)
+                    val physicalChar = cameraManager.getCameraCharacteristics(physicalId)
                     if (physicalChar != null) {
                         physicalSensors.add(parsePhysicalSensor(physicalId, physicalChar, facing))
                     }
