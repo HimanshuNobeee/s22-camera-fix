@@ -6,7 +6,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
@@ -17,6 +16,8 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
 import android.media.ImageReader
 import android.media.MediaActionSound
@@ -42,6 +43,7 @@ import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -86,6 +88,9 @@ class SamsungStyleCameraEngine(
 
     private val _flashMode = MutableStateFlow("OFF")
     val flashMode: StateFlow<String> = _flashMode.asStateFlow()
+
+    private val _hasHardwareFlash = MutableStateFlow(false)
+    val hasHardwareFlash: StateFlow<Boolean> = _hasHardwareFlash.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -140,12 +145,23 @@ class SamsungStyleCameraEngine(
 
         when (_flashMode.value) {
             "ON" -> {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
-                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                // Torch mode keeps physical LED turned ON for preview & illumination
+                if (_hasHardwareFlash.value) {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                } else {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                }
             }
             "AUTO" -> {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
-                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                if (_hasHardwareFlash.value) {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                } else {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                }
             }
             else -> {
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
@@ -177,9 +193,13 @@ class SamsungStyleCameraEngine(
         val handler = backgroundHandler ?: return
 
         try {
+            // If physical sub-camera, characteristics might come from physical ID
             val characteristics = cameraManager.getCameraCharacteristics(cameraDetails.id)
             val maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10.0f
             _maxZoomRatio.value = maxZoom.coerceIn(1.0f, 10.0f)
+
+            val flashAvailable = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+            _hasHardwareFlash.value = flashAvailable
 
             // Calculate optimal preview & still capture sizes
             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -199,30 +219,113 @@ class SamsungStyleCameraEngine(
                 }, handler)
             }
 
-            cameraManager.openCamera(cameraDetails.id, object : CameraDevice.StateCallback() {
+            // Determine open strategy:
+            // 1. Direct open of cameraDetails.id
+            // 2. If it is a physical sub-camera not openable directly, open parent logical camera targeting physical ID
+            attemptCameraOpen(cameraDetails, previewSurface!!, imageReader!!.surface, handler)
+
+        } catch (e: Exception) {
+            _errorMessage.value = "Failed to initialize camera ${cameraDetails.id}: ${e.message}"
+            e.printStackTrace()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun attemptCameraOpen(
+        cameraDetails: CameraDeviceDetails,
+        previewSurf: Surface,
+        imageSurf: Surface,
+        handler: Handler
+    ) {
+        val targetPhysicalId = if (cameraDetails.isPhysicalSubCamera) cameraDetails.id else null
+        val idToOpen = if (cameraDetails.isPhysicalSubCamera) {
+            // First try opening physical ID directly
+            cameraDetails.id
+        } else {
+            cameraDetails.id
+        }
+
+        try {
+            cameraManager.openCamera(idToOpen, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     cameraDevice = camera
-                    createCaptureSession(camera, previewSurface!!, imageReader!!.surface, handler)
+                    createCaptureSession(camera, previewSurf, imageSurf, null, handler)
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
                     cameraDevice = null
                     _isSessionReady.value = false
-                    _errorMessage.value = "Camera disconnected."
+                    _errorMessage.value = "Camera ${camera.id} disconnected."
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
                     cameraDevice = null
                     _isSessionReady.value = false
-                    _errorMessage.value = "Camera error code: $error. Ensure damaged 3x lens is disabled."
+
+                    // If direct physical open failed on HAL, fallback to parent logical camera with targeted physical stream
+                    if (cameraDetails.isPhysicalSubCamera && cameraDetails.parentLogicalCameraId != null) {
+                        fallbackToLogicalPhysicalTarget(
+                            cameraDetails.parentLogicalCameraId,
+                            cameraDetails.id,
+                            previewSurf,
+                            imageSurf,
+                            handler
+                        )
+                    } else {
+                        _errorMessage.value = "Camera error code: $error on ID ${cameraDetails.id}."
+                    }
                 }
             }, handler)
-
+        } catch (e: IllegalArgumentException) {
+            // Physical ID not openable directly, open parent logical camera with targeted physical stream
+            if (cameraDetails.isPhysicalSubCamera && cameraDetails.parentLogicalCameraId != null) {
+                fallbackToLogicalPhysicalTarget(
+                    cameraDetails.parentLogicalCameraId,
+                    cameraDetails.id,
+                    previewSurf,
+                    imageSurf,
+                    handler
+                )
+            } else {
+                _errorMessage.value = "Open failed: ${e.message}"
+            }
         } catch (e: Exception) {
-            _errorMessage.value = "Failed to open camera ${cameraDetails.id}: ${e.message}"
-            e.printStackTrace()
+            _errorMessage.value = "Failed to open camera: ${e.message}"
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun fallbackToLogicalPhysicalTarget(
+        logicalId: String,
+        physicalId: String,
+        previewSurf: Surface,
+        imageSurf: Surface,
+        handler: Handler
+    ) {
+        try {
+            cameraManager.openCamera(logicalId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraDevice = camera
+                    createCaptureSession(camera, previewSurf, imageSurf, physicalId, handler)
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    cameraDevice = null
+                    _isSessionReady.value = false
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                    cameraDevice = null
+                    _isSessionReady.value = false
+                    _errorMessage.value = "Logical camera probe error $error."
+                }
+            }, handler)
+        } catch (e: Exception) {
+            _errorMessage.value = "Fallback to logical camera failed: ${e.message}"
         }
     }
 
@@ -230,37 +333,77 @@ class SamsungStyleCameraEngine(
         camera: CameraDevice,
         previewSurface: Surface,
         imageSurface: Surface,
+        physicalCameraId: String?,
         handler: Handler
     ) {
         try {
-            val surfaces = listOf(previewSurface, imageSurface)
-            @Suppress("DEPRECATION")
-            camera.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    captureSession = session
-                    try {
-                        val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                            addTarget(previewSurface)
-                            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                        }
-                        previewRequestBuilder = builder
-                        applyFlashMode()
-                        session.setRepeatingRequest(builder.build(), null, handler)
-                        _isSessionReady.value = true
-                    } catch (e: Exception) {
-                        _errorMessage.value = "Session request failed: ${e.message}"
-                    }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val previewOutput = OutputConfiguration(previewSurface).apply {
+                    if (physicalCameraId != null) setPhysicalCameraId(physicalCameraId)
+                }
+                val imageOutput = OutputConfiguration(imageSurface).apply {
+                    if (physicalCameraId != null) setPhysicalCameraId(physicalCameraId)
                 }
 
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    _errorMessage.value = "Capture session configuration rejected by HAL."
-                    _isSessionReady.value = false
-                }
-            }, handler)
+                val sessionConfig = SessionConfiguration(
+                    SessionConfiguration.SESSION_REGULAR,
+                    listOf(previewOutput, imageOutput),
+                    Executors.newSingleThreadExecutor(),
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            captureSession = session
+                            startRepeatingPreview(camera, previewSurface, session, handler)
+                        }
+
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                            _errorMessage.value = "Capture session configuration rejected by HAL."
+                            _isSessionReady.value = false
+                        }
+                    }
+                )
+                camera.createCaptureSession(sessionConfig)
+            } else {
+                @Suppress("DEPRECATION")
+                camera.createCaptureSession(
+                    listOf(previewSurface, imageSurface),
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            captureSession = session
+                            startRepeatingPreview(camera, previewSurface, session, handler)
+                        }
+
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                            _errorMessage.value = "Capture session rejected."
+                            _isSessionReady.value = false
+                        }
+                    },
+                    handler
+                )
+            }
         } catch (e: Exception) {
-            _errorMessage.value = "Failed to create session: ${e.message}"
+            _errorMessage.value = "Session setup error: ${e.message}"
+        }
+    }
+
+    private fun startRepeatingPreview(
+        camera: CameraDevice,
+        previewSurface: Surface,
+        session: CameraCaptureSession,
+        handler: Handler
+    ) {
+        try {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(previewSurface)
+                set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
+            previewRequestBuilder = builder
+            applyFlashMode()
+            session.setRepeatingRequest(builder.build(), null, handler)
+            _isSessionReady.value = true
+        } catch (e: Exception) {
+            _errorMessage.value = "Repeating request failed: ${e.message}"
         }
     }
 
@@ -285,9 +428,21 @@ class SamsungStyleCameraEngine(
 
                 // Flash for capture
                 when (_flashMode.value) {
-                    "ON" -> set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
-                    "AUTO" -> set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
-                    else -> set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    "ON" -> {
+                        if (_hasHardwareFlash.value) {
+                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
+                            set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
+                        }
+                    }
+                    "AUTO" -> {
+                        if (_hasHardwareFlash.value) {
+                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
+                        }
+                    }
+                    else -> {
+                        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                        set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                    }
                 }
 
                 // Apply zoom crop
@@ -520,6 +675,11 @@ class SamsungStyleCameraEngine(
         previewSurface = null
         _isSessionReady.value = false
         stopBackgroundThread()
+
+        // Short sleep to ensure the hardware HAL daemon frees the device handle
+        try {
+            Thread.sleep(60)
+        } catch (e: Exception) {}
     }
 
     fun release() {

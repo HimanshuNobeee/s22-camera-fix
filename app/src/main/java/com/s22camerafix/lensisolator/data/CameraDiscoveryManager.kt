@@ -58,6 +58,51 @@ class CameraDiscoveryManager(context: Context) {
                     )
                 }
             }
+
+            // Expose physical sub-cameras as individual selectable cameras
+            val existingIds = result.map { it.id }.toSet()
+            val synthesized = mutableListOf<CameraDeviceDetails>()
+
+            for (cam in result) {
+                if (cam.isLogicalMultiCamera) {
+                    for (phy in cam.physicalSensors) {
+                        if (!existingIds.contains(phy.id) && !synthesized.any { it.id == phy.id }) {
+                            try {
+                                val char = cameraManager.getCameraCharacteristics(phy.id)
+                                val details = parseCameraDetails(phy.id, char, concurrentCombinations).copy(
+                                    isPhysicalSubCamera = true,
+                                    parentLogicalCameraId = cam.id
+                                )
+                                synthesized.add(details)
+                            } catch (e: Exception) {
+                                synthesized.add(
+                                    CameraDeviceDetails(
+                                        id = phy.id,
+                                        facing = cam.facing,
+                                        hardwareLevel = cam.hardwareLevel,
+                                        isLogicalMultiCamera = false,
+                                        physicalCameraIds = emptySet(),
+                                        physicalSensors = emptyList(),
+                                        focalLengths = phy.focalLengths,
+                                        apertures = phy.apertures,
+                                        equivalentFocalLength35mm = phy.equivalentFocalLength35mm,
+                                        sensorResolutionMp = phy.sensorResolutionMp,
+                                        maxPhotoSize = phy.pixelArraySize,
+                                        maxPreviewFps = 30,
+                                        hasOis = phy.hasOis,
+                                        hasAutofocus = phy.hasAutofocus,
+                                        capabilities = emptyList(),
+                                        isConcurrentCapable = false,
+                                        isPhysicalSubCamera = true,
+                                        parentLogicalCameraId = cam.id
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            result.addAll(synthesized)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -230,10 +275,12 @@ class CameraDiscoveryManager(context: Context) {
             parentFacing == LensFacing.FRONT -> "Front / Selfie Lens"
             eqFocal != null && eqFocal < 18f -> "Ultra-Wide (~0.6x, ~${eqFocal.roundToInt()}mm)"
             eqFocal != null && eqFocal in 18f..35f -> "Primary Wide (~1x, ~${eqFocal.roundToInt()}mm)"
-            eqFocal != null && eqFocal > 50f -> "Telephoto (~3x, ~${eqFocal.roundToInt()}mm)"
+            eqFocal != null && eqFocal in 36f..120f -> "Telephoto (~3x, ~${eqFocal.roundToInt()}mm)"
+            eqFocal != null && eqFocal > 120f -> "Periscope Telephoto (~10x, ~${eqFocal.roundToInt()}mm)"
             focalLengths.isNotEmpty() && focalLengths.first() < 3.0f -> "Ultra-Wide (~0.6x)"
             focalLengths.isNotEmpty() && focalLengths.first() in 3.0f..6.5f -> "Primary Wide (~1x)"
-            focalLengths.isNotEmpty() && focalLengths.first() > 6.5f -> "Telephoto (~3x)"
+            focalLengths.isNotEmpty() && focalLengths.first() in 6.6f..15.0f -> "Telephoto (~3x)"
+            focalLengths.isNotEmpty() && focalLengths.first() > 15.0f -> "Periscope Telephoto (~10x)"
             else -> "Physical Sensor $id"
         }
 

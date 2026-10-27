@@ -18,13 +18,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -66,12 +63,27 @@ fun LensSetupDialog(
     onSavePreferences: (enabledIds: Set<String>, defaultId: String) -> Unit,
     onDismiss: (() -> Unit)? = null
 ) {
+    // If physical sub-cameras exist, prefer showing discrete sensors over combined multi-camera 0
+    val displayCameras = remember(allCameras) {
+        val hasPhysicalSub = allCameras.any { it.isPhysicalSubCamera }
+        if (hasPhysicalSub) {
+            allCameras.filter { !it.isLogicalMultiCamera }
+        } else {
+            allCameras
+        }
+    }
+
     var enabledIds by remember {
         mutableStateOf(
             if (initialEnabledIds.isNotEmpty()) initialEnabledIds
             else {
-                // Auto-exclude telephoto if it's the known damaged sensor
-                allCameras.filter { !it.estimatedLensRole.contains("Telephoto", ignoreCase = true) }
+                // Auto-exclude damaged 3x sensor (ID 6 or telephoto ~3x)
+                displayCameras
+                    .filter { cam ->
+                        val isDamaged3x = cam.id == "6" ||
+                                (cam.estimatedLensRole.contains("3x", ignoreCase = true) && !cam.estimatedLensRole.contains("10x", ignoreCase = true))
+                        !isDamaged3x
+                    }
                     .map { it.id }.toSet()
             }
         )
@@ -79,7 +91,11 @@ fun LensSetupDialog(
 
     var selectedDefaultId by remember {
         mutableStateOf(
-            initialDefaultId ?: enabledIds.firstOrNull() ?: allCameras.firstOrNull()?.id ?: "0"
+            initialDefaultId?.takeIf { enabledIds.contains(it) }
+                ?: displayCameras.find { it.id == "5" }?.id
+                ?: displayCameras.find { it.estimatedLensRole.contains("1x") }?.id
+                ?: enabledIds.firstOrNull()
+                ?: "2"
         )
     }
 
@@ -89,7 +105,7 @@ fun LensSetupDialog(
     ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.92f)
+                .fillMaxWidth(0.94f)
                 .clip(RoundedCornerShape(20.dp)),
             color = DarkSurface
         ) {
@@ -122,7 +138,7 @@ fun LensSetupDialog(
                             color = Color.White
                         )
                         Text(
-                            text = "Select working lenses to include",
+                            text = "Galaxy S22 Ultra Sensor Selector",
                             style = MaterialTheme.typography.bodySmall,
                             color = AccentCyan
                         )
@@ -149,7 +165,7 @@ fun LensSetupDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Uncheck the damaged 3x Telephoto lens. The camera app will completely bypass it and only use your healthy lenses.",
+                        text = "Uncheck the damaged 3x Telephoto (Sensor 6). Your Ultra-Wide (.6x), Main (1x), 10x Periscope, and both Selfie modes will operate smoothly without crashes.",
                         color = WarningAmber,
                         fontSize = 11.sp,
                         lineHeight = 15.sp
@@ -159,7 +175,7 @@ fun LensSetupDialog(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "AVAILABLE SENSORS (${allCameras.size}):",
+                    text = "SELECT ACTIVE LENSES (${displayCameras.size} Available):",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextMuted,
                     fontWeight = FontWeight.Bold,
@@ -173,9 +189,10 @@ fun LensSetupDialog(
                     modifier = Modifier.weight(1f, fill = false),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(allCameras) { cam ->
+                    items(displayCameras) { cam ->
                         val isEnabled = enabledIds.contains(cam.id)
-                        val isTelephoto = cam.estimatedLensRole.contains("Telephoto", ignoreCase = true)
+                        val isDamaged3x = cam.id == "6" ||
+                                (cam.estimatedLensRole.contains("3x", ignoreCase = true) && !cam.estimatedLensRole.contains("10x", ignoreCase = true))
                         val isDefault = selectedDefaultId == cam.id
 
                         Column(
@@ -196,28 +213,27 @@ fun LensSetupDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = "Camera ID: ${cam.id} — ${cam.estimatedLensRole}",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isEnabled) Color.White else TextMuted
-                                        )
-                                    }
+                                    Text(
+                                        text = "Sensor ID [${cam.id}] — ${cam.estimatedLensRole}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isEnabled) Color.White else TextMuted
+                                    )
 
                                     Spacer(modifier = Modifier.height(2.dp))
 
                                     Text(
                                         text = "${cam.facing.label} • ${cam.sensorResolutionMp} MP • f/${cam.apertures.firstOrNull() ?: "?"}" +
-                                                (cam.equivalentFocalLength35mm?.let { " • ~${it}mm" } ?: ""),
+                                                (cam.equivalentFocalLength35mm?.let { " • ~${it}mm" } ?: "") +
+                                                if (cam.hasOis) " • OIS" else "",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (isEnabled) AccentCyan else TextMuted,
                                         fontSize = 11.sp
                                     )
 
-                                    if (isTelephoto) {
+                                    if (isDamaged3x) {
                                         Text(
-                                            text = "⚠️ Suspected Water-Damaged 3x Telephoto",
+                                            text = "⚠️ WATER-DAMAGED 3X SENSOR (KEEP DISABLED)",
                                             color = ErrorRed,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold
@@ -259,7 +275,7 @@ fun LensSetupDialog(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = if (isDefault) "Default Launch Camera (Primary)" else "Set as default launch camera",
+                                        text = if (isDefault) "Default Launch Camera (Active)" else "Set as default launch camera",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (isDefault) AccentCyan else TextSecondary,
                                         fontSize = 11.sp
@@ -276,7 +292,7 @@ fun LensSetupDialog(
                 Button(
                     onClick = {
                         val finalDefault = if (enabledIds.contains(selectedDefaultId)) selectedDefaultId
-                        else enabledIds.firstOrNull() ?: allCameras.firstOrNull()?.id ?: "0"
+                        else enabledIds.firstOrNull() ?: displayCameras.firstOrNull()?.id ?: "5"
                         onSavePreferences(enabledIds, finalDefault)
                     },
                     modifier = Modifier.fillMaxWidth(),

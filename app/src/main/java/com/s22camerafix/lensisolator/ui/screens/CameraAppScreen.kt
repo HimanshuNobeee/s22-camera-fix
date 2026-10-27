@@ -36,9 +36,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
@@ -46,15 +43,11 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Timer10
-import androidx.compose.material.icons.filled.Timer3
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -84,11 +77,8 @@ import com.s22camerafix.lensisolator.engine.SamsungStyleCameraEngine
 import com.s22camerafix.lensisolator.ui.components.AutoFitTextureView
 import com.s22camerafix.lensisolator.ui.dialogs.CameraSettingsDialog
 import com.s22camerafix.lensisolator.ui.dialogs.LensSetupDialog
-import com.s22camerafix.lensisolator.ui.theme.AccentCyan
-import com.s22camerafix.lensisolator.ui.theme.DarkBackground
 import com.s22camerafix.lensisolator.ui.theme.TextMuted
 import com.s22camerafix.lensisolator.ui.theme.TextSecondary
-import com.s22camerafix.lensisolator.ui.theme.WarningAmber
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -108,7 +98,10 @@ fun CameraAppScreen(
     var enabledCameraIds by remember { mutableStateOf(preferences.enabledCameraIds) }
     var activeCameraId by remember {
         mutableStateOf(
-            preferences.defaultCameraId ?: enabledCameraIds.firstOrNull() ?: allCameras.firstOrNull()?.id ?: "0"
+            preferences.defaultCameraId?.takeIf { enabledCameraIds.contains(it) }
+                ?: allCameras.find { it.id == "5" }?.id
+                ?: enabledCameraIds.firstOrNull()
+                ?: allCameras.firstOrNull()?.id ?: "2"
         )
     }
     var aspectRatio by remember { mutableStateOf(preferences.aspectRatio) }
@@ -128,6 +121,7 @@ fun CameraAppScreen(
     val zoomRatio by cameraEngine.currentZoomRatio.collectAsState()
     val maxZoom by cameraEngine.maxZoomRatio.collectAsState()
     val errorMessage by cameraEngine.errorMessage.collectAsState()
+    val hasHardwareFlash by cameraEngine.hasHardwareFlash.collectAsState()
 
     var activeSurfaceTexture by remember { mutableStateOf<SurfaceTexture?>(null) }
 
@@ -162,6 +156,7 @@ fun CameraAppScreen(
     // Switch camera helper
     fun switchCamera(newId: String) {
         activeCameraId = newId
+        preferences.defaultCameraId = newId
         val target = availableCameras.find { it.id == newId }
         val st = activeSurfaceTexture
         if (target != null && st != null) {
@@ -258,6 +253,15 @@ fun CameraAppScreen(
                         cameraEngine.stopCurrentSession()
                     }
                 )
+
+                // Screen Flash illumination for Selfie mode when flash is ON
+                if (activeCamera?.facing == LensFacing.FRONT && flashMode == "ON") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .border(28.dp, Color(0xFFFFF7ED).copy(alpha = 0.85f), RoundedCornerShape(16.dp))
+                    )
+                }
 
                 // 3x3 Grid Lines Overlay
                 if (showGridLines) {
@@ -367,7 +371,7 @@ fun CameraAppScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = if (timerSeconds > 0) Icons.Default.Timer else Icons.Default.Timer,
+                        imageVector = Icons.Default.Timer,
                         contentDescription = "Timer",
                         tint = if (timerSeconds > 0) Color(0xFFFBBF24) else TextMuted,
                         modifier = Modifier.size(18.dp)
@@ -427,10 +431,17 @@ fun CameraAppScreen(
                 .padding(bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Samsung-Style Zoom Lens Pills (Only for enabled rear cameras)
+            // Samsung-Style Zoom Lens Pills or Selfie Mode Selector
             if (activeCamera?.facing == LensFacing.BACK && rearCameras.isNotEmpty()) {
                 SamsungLensPillSelector(
                     rearCameras = rearCameras,
+                    activeCameraId = activeCameraId,
+                    onSelectCamera = { newId -> switchCamera(newId) }
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+            } else if (activeCamera?.facing == LensFacing.FRONT && frontCameras.isNotEmpty()) {
+                SamsungSelfieModeSelector(
+                    frontCameras = frontCameras,
                     activeCameraId = activeCameraId,
                     onSelectCamera = { newId -> switchCamera(newId) }
                 )
@@ -520,9 +531,12 @@ fun CameraAppScreen(
                         .clickable {
                             val isCurrentFront = activeCamera?.facing == LensFacing.FRONT
                             val targetId = if (isCurrentFront) {
-                                rearCameras.firstOrNull()?.id ?: "0"
+                                rearCameras.find { it.id == "5" }?.id
+                                    ?: rearCameras.find { it.zoomPillLabel == "1" }?.id
+                                    ?: rearCameras.firstOrNull()?.id ?: "2"
                             } else {
-                                frontCameras.firstOrNull()?.id ?: "1"
+                                frontCameras.find { it.id == "1" }?.id
+                                    ?: frontCameras.firstOrNull()?.id ?: "1"
                             }
                             switchCamera(targetId)
                         },
@@ -584,25 +598,26 @@ fun SamsungLensPillSelector(
     activeCameraId: String,
     onSelectCamera: (String) -> Unit
 ) {
+    // Sort rear cameras: .6x, 1x, 3x, 10x
+    val sortedCameras = remember(rearCameras) {
+        rearCameras.sortedBy { it.equivalentFocalLength35mm ?: it.focalLengths.firstOrNull() ?: 23f }
+    }
+
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(24.dp))
             .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
-            .padding(horizontal = 4.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        rearCameras.forEach { cam ->
+        sortedCameras.forEach { cam ->
             val isSelected = cam.id == activeCameraId
-            val label = when {
-                cam.estimatedLensRole.contains("Ultra-Wide", ignoreCase = true) -> ".6"
-                cam.estimatedLensRole.contains("Telephoto", ignoreCase = true) -> "3"
-                else -> "1"
-            }
+            val label = cam.zoomPillLabel
 
             Box(
                 modifier = Modifier
-                    .size(34.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(if (isSelected) Color(0xFFFBBF24) else Color.Transparent)
                     .clickable { onSelectCamera(cam.id) },
@@ -615,6 +630,75 @@ fun SamsungLensPillSelector(
                     fontSize = 12.sp,
                     fontFamily = FontFamily.SansSerif
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun SamsungSelfieModeSelector(
+    frontCameras: List<CameraDeviceDetails>,
+    activeCameraId: String,
+    onSelectCamera: (String) -> Unit
+) {
+    val wideCam = frontCameras.find { it.id == "1" || (it.equivalentFocalLength35mm != null && it.equivalentFocalLength35mm < 28f) }
+        ?: frontCameras.firstOrNull()
+    val regularCam = frontCameras.find { it.id == "3" || (it.equivalentFocalLength35mm != null && it.equivalentFocalLength35mm >= 28f) }
+        ?: frontCameras.lastOrNull()
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color(0xFF1E1E1E).copy(alpha = 0.85f))
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (regularCam != null) {
+            val isSelected = activeCameraId == regularCam.id
+            Box(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (isSelected) Color(0xFFFBBF24) else Color.Transparent)
+                    .clickable { onSelectCamera(regularCam.id) }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = "👤", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Normal",
+                        color = if (isSelected) Color.Black else Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        if (wideCam != null) {
+            val isSelected = activeCameraId == wideCam.id
+            Box(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (isSelected) Color(0xFFFBBF24) else Color.Transparent)
+                    .clickable { onSelectCamera(wideCam.id) }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = "👥", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Wide",
+                        color = if (isSelected) Color.Black else Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
     }
