@@ -44,17 +44,18 @@ import com.s22camerafix.lensisolator.ui.theme.TextSecondary
 
 class MainActivity : ComponentActivity() {
 
-    private var hasCameraPermission by mutableStateOf(false)
+    private var hasPermissions by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        hasCameraPermission = isGranted
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
+        hasPermissions = cameraGranted
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        checkCameraPermission()
+        checkPermissions()
 
         setContent {
             S22CameraFixTheme {
@@ -62,10 +63,15 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = Color.Black
                 ) {
-                    if (!hasCameraPermission) {
+                    if (!hasPermissions) {
                         MinimalPermissionScreen(
                             onRequestPermission = {
-                                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                requestPermissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.CAMERA,
+                                        Manifest.permission.RECORD_AUDIO
+                                    )
+                                )
                             }
                         )
                     } else {
@@ -76,8 +82,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun checkCameraPermission() {
-        hasCameraPermission = ContextCompat.checkSelfPermission(
+    private fun checkPermissions() {
+        hasPermissions = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
@@ -110,7 +116,7 @@ fun MinimalPermissionScreen(onRequestPermission: () -> Unit) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Camera Permission Required",
+                text = "Permissions Required",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = Color.White
@@ -119,7 +125,7 @@ fun MinimalPermissionScreen(onRequestPermission: () -> Unit) {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "To take photos with .6x, 1x, and 10x lenses, camera access is required.",
+                text = "Camera access is needed for .6x, 1x, and 10x lenses, and microphone access is needed for video recording.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
                 textAlign = TextAlign.Center

@@ -8,7 +8,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.s22camerafix.lensisolator"
+        applicationId = "com.samsung.android.scan3d"
         minSdk = 28
         targetSdk = 34
         versionCode = 1
@@ -29,7 +29,6 @@ android {
             )
         }
         debug {
-            applicationIdSuffix = ".debug"
             isDebuggable = true
         }
     }
