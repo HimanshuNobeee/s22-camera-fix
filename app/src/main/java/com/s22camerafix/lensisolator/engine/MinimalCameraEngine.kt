@@ -229,7 +229,7 @@ class MinimalCameraEngine(
     }
 
     private fun applyFlashState(enabled: Boolean) {
-        val builder = previewBuilder ?: return
+        val builder = previewRequestBuilder ?: return
         val session = captureSession ?: return
         val handler = backgroundHandler ?: return
 
